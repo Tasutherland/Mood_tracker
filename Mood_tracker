@@ -1,0 +1,420 @@
+import SwiftUI
+import Combine
+import CoreLocation
+
+// MARK: - Models
+
+struct MoodEntry: Identifiable, Codable {
+    let id = UUID()
+    let date: Date
+    var mood: String
+    var intensity: Int
+    var sleepHours: Double
+    var stressLevel: Int
+    var exerciseMinutes: Int
+    var headacheIntensity: Int
+    var weatherData: WeatherData?
+}
+
+struct WeatherData: Codable {
+    let temperature: Double
+    let pressure: Double
+    let humidity: Int
+}
+
+struct UserProfile: Codable {
+    var age: Int
+    var gender: String
+    var location: String?
+    var latitude: Double?
+    var longitude: Double?
+}
+
+struct AISuggestion {
+    let predictedMood: String
+    let confidence: Double
+    let possibleCause: String
+    let solution: String
+}
+
+// MARK: - View Models
+
+class MoodViewModel: ObservableObject {
+    @Published var moodEntries: [MoodEntry] = []
+    @Published var currentEntry: MoodEntry
+    @Published var aiSuggestion: AISuggestion?
+    
+    private let weatherService = WeatherService()
+    private var userProfile: UserProfile?
+    private var cancellables = Set<AnyCancellable>()
+    
+    init() {
+        currentEntry = MoodEntry(date: Date(), mood: "", intensity: 3, sleepHours: 7, stressLevel: 3, exerciseMinutes: 30, headacheIntensity: 0)
+        loadUserProfile()
+        loadMoodEntries()
+        
+        $currentEntry
+            .debounce(for: .seconds(0.5), scheduler: RunLoop.main)
+            .sink { [weak self] _ in
+                self?.generateAISuggestion()
+            }
+            .store(in: &cancellables)
+    }
+    
+    private func loadUserProfile() {
+        if let savedProfile = UserDefaults.standard.object(forKey: "UserProfile") as? Data,
+           let loadedProfile = try? JSONDecoder().decode(UserProfile.self, from: savedProfile) {
+            userProfile = loadedProfile
+        }
+    }
+    
+    private func loadMoodEntries() {
+        if let savedEntries = UserDefaults.standard.object(forKey: "MoodEntries") as? Data,
+           let loadedEntries = try? JSONDecoder().decode([MoodEntry].self, from: savedEntries) {
+            moodEntries = loadedEntries
+        }
+    }
+    
+    private func saveMoodEntries() {
+        if let encoded = try? JSONEncoder().encode(moodEntries) {
+            UserDefaults.standard.set(encoded, forKey: "MoodEntries")
+        }
+    }
+    
+    func addCurrentEntry() {
+        if let latitude = userProfile?.latitude, let longitude = userProfile?.longitude {
+            weatherService.getCurrentWeather(latitude: latitude, longitude: longitude) { [weak self] result in
+                DispatchQueue.main.async {
+                    switch result {
+                    case .success(let weatherData):
+                        var updatedEntry = self?.currentEntry ?? MoodEntry(date: Date(), mood: "", intensity: 3, sleepHours: 7, stressLevel: 3, exerciseMinutes: 30, headacheIntensity: 0)
+                        updatedEntry.weatherData = weatherData
+                        self?.moodEntries.append(updatedEntry)
+                    case .failure(let error):
+                        print("Failed to fetch weather data: \(error.localizedDescription)")
+                        self?.moodEntries.append(self?.currentEntry ?? MoodEntry(date: Date(), mood: "", intensity: 3, sleepHours: 7, stressLevel: 3, exerciseMinutes: 30, headacheIntensity: 0))
+                    }
+                    self?.saveMoodEntries()
+                    self?.resetCurrentEntry()
+                }
+            }
+        } else {
+            moodEntries.append(currentEntry)
+            saveMoodEntries()
+            resetCurrentEntry()
+        }
+    }
+    
+    func resetCurrentEntry() {
+        currentEntry = MoodEntry(date: Date(), mood: "", intensity: 3, sleepHours: 7, stressLevel: 3, exerciseMinutes: 30, headacheIntensity: 0)
+    }
+    
+    private func generateAISuggestion() {
+        // Placeholder for AI suggestion generation
+        let possibleCauses = ["Your sleep pattern", "Your exercise routine", "Your stress levels", "The weather conditions"]
+        let suggestions = [
+            "Try to maintain a consistent sleep schedule",
+            "Consider incorporating more physical activity into your day",
+            "Practice stress-reduction techniques like meditation",
+            "Pay attention to how weather changes affect your mood"
+        ]
+        
+        let randomIndex = Int.random(in: 0..<possibleCauses.count)
+        aiSuggestion = AISuggestion(
+            predictedMood: currentEntry.mood,
+            confidence: Double.random(in: 0.7...0.9),
+            possibleCause: possibleCauses[randomIndex],
+            solution: suggestions[randomIndex]
+        )
+    }
+    
+    func provideFeedback(for suggestion: AISuggestion, isAccurate: Bool) {
+        // Placeholder for handling user feedback
+        print("User provided feedback: Suggestion was \(isAccurate ? "accurate" : "inaccurate")")
+    }
+    
+    func generateSampleData() {
+        let calendar = Calendar.current
+        let today = Date()
+        let moodOptions = ["😄", "😊", "😐", "😢", "😠"]
+        
+        for i in 0..<30 {
+            guard let date = calendar.date(byAdding: .day, value: -i, to: today) else { continue }
+            
+            let entry = MoodEntry(
+                date: date,
+                mood: moodOptions.randomElement() ?? "😐",
+                intensity: Int.random(in: 1...5),
+                sleepHours: Double.random(in: 5...9),
+                stressLevel: Int.random(in: 1...5),
+                exerciseMinutes: Int.random(in: 0...60),
+                headacheIntensity: Int.random(in: 0...10),
+                weatherData: WeatherData(
+                    temperature: Double.random(in: 0...30),
+                    pressure: Double.random(in: 970...1030),
+                    humidity: Int.random(in: 30...90)
+                )
+            )
+            
+            moodEntries.append(entry)
+        }
+        
+        saveMoodEntries()
+    }
+}
+
+class UserProfileViewModel: ObservableObject {
+    @Published var userProfile: UserProfile
+    private let locationManager = CLLocationManager()
+    
+    init() {
+        if let savedProfile = UserDefaults.standard.object(forKey: "UserProfile") as? Data,
+           let loadedProfile = try? JSONDecoder().decode(UserProfile.self, from: savedProfile) {
+            userProfile = loadedProfile
+        } else {
+            userProfile = UserProfile(age: 30, gender: "Prefer not to say")
+        }
+        
+        setupLocationManager()
+    }
+    
+    private func setupLocationManager() {
+        locationManager.delegate = self
+        locationManager.requestWhenInUseAuthorization()
+    }
+    
+    func saveProfile() {
+        if let encoded = try? JSONEncoder().encode(userProfile) {
+            UserDefaults.standard.set(encoded, forKey: "UserProfile")
+        }
+    }
+    
+    func updateLocation() {
+        locationManager.requestLocation()
+    }
+}
+
+extension UserProfileViewModel: CLLocationManagerDelegate {
+    func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
+        if let location = locations.last {
+            userProfile.latitude = location.coordinate.latitude
+            userProfile.longitude = location.coordinate.longitude
+            
+            let geocoder = CLGeocoder()
+            geocoder.reverseGeocodeLocation(location) { (placemarks, error) in
+                if let placemark = placemarks?.first {
+                    self.userProfile.location = "\(placemark.locality ?? ""), \(placemark.country ?? "")"
+                    self.saveProfile()
+                }
+            }
+        }
+    }
+    
+    func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {
+        print("Error getting location: \(error.localizedDescription)")
+    }
+}
+
+// MARK: - Views
+
+struct ContentView: View {
+    @StateObject private var viewModel = MoodViewModel()
+    @State private var selectedTab = 0
+    @State private var showingConfirmation = false
+    
+    var body: some View {
+        TabView(selection: $selectedTab) {
+            MoodEntryView(viewModel: viewModel)
+                .tabItem {
+                    Label("Log Mood", systemImage: "square.and.pencil")
+                }
+                .tag(0)
+            
+            MoodTrendsView(moodEntries: viewModel.moodEntries)
+                .tabItem {
+                    Label("Trends", systemImage: "chart.xyaxis.line")
+                }
+                .tag(1)
+            
+            UserProfileView()
+                .tabItem {
+                    Label("Profile", systemImage: "person.crop.circle")
+                }
+                .tag(2)
+        }
+        .accentColor(.purple)
+        .onChange(of: selectedTab) { newValue in
+            if newValue == 0 {
+                viewModel.resetCurrentEntry()
+            }
+        }
+        .overlay(
+            VStack {
+                Spacer()
+                Button("Generate Sample Data") {
+                    viewModel.generateSampleData()
+                    showingConfirmation = true
+                }
+                .padding()
+                .background(Color.blue)
+                .foregroundColor(.white)
+                .cornerRadius(10)
+                .padding(.bottom)
+            }
+        )
+        .alert(isPresented: $showingConfirmation) {
+            Alert(
+                title: Text("Sample Data Generated"),
+                message: Text("30 days of sample mood data have been added to the app."),
+                dismissButton: .default(Text("OK"))
+            )
+        }
+    }
+}
+
+struct MoodEntryView: View {
+    @ObservedObject var viewModel: MoodViewModel
+    @State private var showingConfirmation = false
+    
+    let moodEmojis = ["😄", "😊", "😐", "😢", "😠"]
+    
+    var body: some View {
+        NavigationView {
+            Form {
+                Section(header: Text("How are you feeling?")) {
+                    HStack {
+                        ForEach(moodEmojis, id: \.self) { emoji in
+                            Button(action: {
+                                viewModel.currentEntry.mood = emoji
+                            }) {
+                                Text(emoji)
+                                    .font(.system(size: 40))
+                                    .padding()
+                                    .background(viewModel.currentEntry.mood == emoji ? Color.purple.opacity(0.3) : Color.purple.opacity(0.1))
+                                    .cornerRadius(10)
+                            }
+                            .accessibilityLabel("Mood: \(moodDescription(emoji))")
+                        }
+                    }
+                    
+                    IntensitySlider(value: $viewModel.currentEntry.intensity, label: "Mood Intensity")
+                }
+                
+                Section(header: Text("Additional Information")) {
+                    HStack {
+                        Text("Sleep")
+                        Spacer()
+                        CustomStepper(value: $viewModel.currentEntry.sleepHours, range: 0...24, step: 0.5, format: "%.1f hours")
+                    }
+                    
+                    IntensitySlider(value: $viewModel.currentEntry.stressLevel, label: "Stress Level")
+                    
+                    HStack {
+                        Text("Exercise")
+                        Spacer()
+                        CustomStepper(value: Binding(
+                            get: { Double(viewModel.currentEntry.exerciseMinutes) },
+                            set: { viewModel.currentEntry.exerciseMinutes = Int($0) }
+                        ), range: 0...240, step: 5, format: "%d minutes")
+                    }
+                    
+                    IntensitySlider(value: $viewModel.currentEntry.headacheIntensity, label: "Headache Intensity")
+                }
+                
+                Section {
+                    Button(action: {
+                        viewModel.addCurrentEntry()
+                        showingConfirmation = true
+                    }) {
+                        Text("Log Mood")
+                            .frame(maxWidth: .infinity)
+                            .padding()
+                            .background(Color.purple)
+                            .foregroundColor(.white)
+                            .cornerRadius(10)
+                    }
+                }
+                
+                if let suggestion = viewModel.aiSuggestion {
+                    Section(header: Text("AI Suggestion")) {
+                        AISuggestionView(suggestion: suggestion, viewModel: viewModel)
+                    }
+                }
+            }
+            .navigationTitle("Log Your Mood")
+            .alert(isPresented: $showingConfirmation) {
+                Alert(
+                    title: Text("Mood Logged"),
+                    message: Text("Your mood has been successfully recorded."),
+                    dismissButton: .default(Text("OK"))
+                )
+            }
+        }
+    }
+    
+    private func moodDescription(_ emoji: String) -> String {
+        switch emoji {
+        case "😄": return "Very Happy"
+        case "😊": return "Happy"
+        case "😐": return "Neutral"
+        case "😢": return "Sad"
+        case "😠": return "Angry"
+        default: return "Unknown"
+        }
+    }
+}
+
+struct IntensitySlider: View {
+    @Binding var value: Int
+    let label: String
+    
+    var body: some View {
+        VStack {
+            HStack {
+                Text(label)
+                Spacer()
+                Text("\(value)")
+            }
+            Slider(value: Binding(
+                get: { Double(value) },
+                set: { value = Int($0) }
+            ), in: 1...5, step: 1)
+            .accentColor(.purple)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(label)
+        .accessibilityValue("\(value)")
+    }
+}
+
+struct CustomStepper: View {
+    @Binding var value: Double
+    let range: ClosedRange<Double>
+    let step: Double
+    let format: String
+    
+    var body: some View {
+        HStack {
+            Button(action: {
+                value = max(range.lowerBound, value - step)
+            }) {
+                Image(systemName: "minus.circle")
+            }
+            
+            Text(String(format: format, value))
+                .frame(minWidth: 80)
+            
+            Button(action: {
+                value = min(range.upperBound, value + step)
+            }) {
+                Image(systemName: "plus.circle")
+            }
+        }
+    }
+}
+
+struct AISuggestionView: View {
+    let suggestion: AISuggestion
+    @ObservedObject var viewModel: MoodViewModel
+    
+    var body: some View
